@@ -14,9 +14,11 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "target": "es2019",
-    "outDir": "dist",
+    "outDir": "./dist",
     "rootDir": "./src",
     "declaration": true,
+    "declarationDir": "dist/types",
+    "emitDeclarationOnly": true,
     "noImplicitAny": false,
     "moduleResolution": "node",
     "sourceMap": true,
@@ -24,8 +26,17 @@
     "paths": {
       "*": ["node_modules/*", "src/types/*"]
     },
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "strict": true
   },
-  "include": ["src/*", "src/.ts", "src/deprecated/.ts", "src/nft/index.ts"],
-  "exclude": ["src/**/*.test.ts", "**/node_modules", "dist"]
+  "include": [
+    "src/*",
+    "src/.ts",
+    "src/deprecated/.ts",
+    "src/nft/retrieveRecords.ts",
+    "src/record_v2/index.ts"
+  ],
+  "exclude": ["src/**/*.test.ts", "**/node_modules", "dist", "benchmarks"]
 }

@@ -1,6 +1,16 @@
-use std::{fs::File, time::Duration};
-
-use sns_sdk::record;
+use serde::Serialize;
+use sns_sdk::{
+    favourite_domain::register_favourite::Accounts,
+    record::{self, get_record_v2_key},
+    NAME_OFFERS_PROGRAM_ID,
+};
+use solana_account_decoder::UiAccountEncoding;
+use solana_client::{
+    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
+    rpc_filter::{Memcmp, RpcFilterType},
+};
+use solana_sdk::{bs58, signature::Keypair, system_program};
+use std::collections::HashMap;
 
 use {
     anyhow::anyhow,
@@ -10,8 +20,6 @@ use {
     console::Term,
     indicatif::{ProgressBar, ProgressState, ProgressStyle},
     prettytable::{row, Table},
-    reqwest::multipart,
-    reqwest::Client,
     serde::Deserialize,
     sns_sdk::non_blocking::resolve,
     sns_sdk::{
@@ -27,9 +35,7 @@ use {
     solana_sdk::{signer::Signer, transaction::Transaction},
     spl_name_service::state::NameRecordHeader,
     std::fmt::Write,
-    std::io::Read,
     std::str::FromStr,
-    walkdir::WalkDir,
 };
 
 #[derive(Debug, Parser)]
@@ -75,6 +81,18 @@ enum Commands {
             help = "The list of domains to register with or without .sol suffix"
         )]
         domains: Vec<String>,
+        #[arg(long, short, help = "Optional custom RPC URL")]
+        url: Option<String>,
+    },
+    #[command(arg_required_else_help = true, about = "Register a favourite domain")]
+    RegisterFavourite {
+        #[arg(
+            required = true,
+            help = "The path to the wallet private key used to set the favourite domain or an owner wallet"
+        )]
+        owner: String,
+        #[arg(required = true, help = "The domain to set as favorite")]
+        domain: String,
         #[arg(long, short, help = "Optional custom RPC URL")]
         url: Option<String>,
     },
@@ -156,41 +174,16 @@ enum Commands {
         owners: Vec<String>,
     },
     Record(RecordCommand),
-    #[command(
-        arg_required_else_help = true,
-        about = "Upload a website to IPFS and automatically set your IPFS record"
-    )]
-    Deploy {
-        #[arg(long, short, help = "Optional custom RPC URL")]
-        url: Option<String>,
-        #[arg(
-            long,
-            short,
-            required = true,
-            help = "The domain to upload the content to"
-        )]
-        domain: String,
-        #[arg(
-            long,
-            short,
-            required = true,
-            help = "The path to the keypair ownning the domain"
-        )]
-        keypair: String,
-        #[arg(
-            long,
-            short,
-            required = true,
-            help = "The path of the folder to upload"
-        )]
-        folder: String,
-    },
 }
 
 #[derive(Debug, Args)]
 pub struct RecordCommand {
     #[command(subcommand)]
     pub cmd: RecordSubCommand,
+    #[clap(long, help = "Use records V2", default_value_t)]
+    v2: bool,
+    #[arg(long, short, help = "Optional custom RPC URL")]
+    url: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -213,6 +206,8 @@ pub enum RecordSubCommand {
         #[clap(long, help = "The path of keypair ownning the domain")]
         keypair: String,
     },
+    #[command(about = "Dump records system info")]
+    SystemDump,
 }
 
 const RPC_URL: &str = "https://api.mainnet-beta.solana.com";
@@ -383,7 +378,10 @@ async fn process_lookup(rpc_client: &RpcClient, domains: Vec<String>) -> CliResu
     table.add_row(row!["Domain", "Domain key", "Parent", "Owner", "Data"]);
     let pb = progress_bar(domains.len());
     for (idx, domain) in domains.into_iter().enumerate() {
-        let domain_key = sns_sdk::derivation::get_domain_key(&domain)?;
+        let sns_sdk::derivation::DomainKeyWithParent {
+            key: domain_key,
+            parent,
+        } = sns_sdk::derivation::get_domain_key_with_parent(&domain)?;
         let row = match resolve::resolve_name_registry(rpc_client, &domain_key).await? {
             Some((header, data)) => {
                 let data = String::from_utf8(data)?;
@@ -395,7 +393,7 @@ async fn process_lookup(rpc_client: &RpcClient, domains: Vec<String>) -> CliResu
                     data
                 ]
             }
-            _ => row![format_domain(&domain), domain_key],
+            _ => row![format_domain(&domain), domain_key, parent, "N/A", "N/A"],
         };
         table.add_row(row);
         pb.set_position(idx as u64);
@@ -506,6 +504,79 @@ async fn process_register(
     pb.finish();
     Term::stdout().clear_to_end_of_screen()?;
     table.printstd();
+    Ok(())
+}
+
+enum OwnerKind {
+    Keypair(Keypair),
+    Pubkey(Pubkey),
+}
+
+impl OwnerKind {
+    fn owner(&self) -> Pubkey {
+        match self {
+            OwnerKind::Keypair(keypair) => keypair.pubkey(),
+            OwnerKind::Pubkey(pk) => *pk,
+        }
+    }
+}
+
+async fn process_register_favourite(
+    rpc_client: &RpcClient,
+    owner_keypair_path_or_address: &str,
+    domain: &str,
+) -> CliResult {
+    println!("Registering favourite domain...");
+    let owner_kind = {
+        match read_keypair_file(owner_keypair_path_or_address) {
+            Ok(kp) => OwnerKind::Keypair(kp),
+            Err(e) => match Pubkey::from_str(owner_keypair_path_or_address) {
+                Ok(owner) => OwnerKind::Pubkey(owner),
+                Err(parse_pk_error) => {
+                    return Err(anyhow!(
+                    "Owner was not a valid keypair nor a valid address: {e:?}, {parse_pk_error:?}"
+                )
+                    .into())
+                }
+            },
+        }
+    };
+    let owner = owner_kind.owner();
+    let domain_key = get_domain_key(domain)?;
+    let ix = sns_sdk::favourite_domain::get_register_favourite_instruction(
+        NAME_OFFERS_PROGRAM_ID,
+        Accounts {
+            owner: &owner,
+            name: &domain_key,
+            favourite_domain: &sns_sdk::favourite_domain::derive_favourite_domain_key(&owner),
+            system_program: &system_program::ID,
+        },
+        sns_sdk::favourite_domain::register_favourite::Params {},
+    );
+    let blockhash = rpc_client.get_latest_blockhash().await?;
+
+    match owner_kind {
+        OwnerKind::Keypair(keypair) => {
+            let tx = Transaction::new_signed_with_payer(
+                &[ix],
+                Some(&keypair.pubkey()),
+                &[&keypair],
+                blockhash,
+            );
+            let sig = rpc_client.send_and_confirm_transaction(&tx).await?;
+            println!("Favourite set, txid: {sig}");
+        }
+        OwnerKind::Pubkey(_) => {
+            let mut tx = Transaction::new_with_payer(&[ix.clone()], Some(&owner));
+            tx.message.recent_blockhash = blockhash;
+
+            println!(
+                "base58 register favourite tx: {}",
+                bs58::encode(bincode::serialize(&tx).unwrap()).into_string()
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -626,13 +697,22 @@ async fn process_record_set(
     Ok(())
 }
 
-async fn process_record_get(rpc_client: &RpcClient, domain: &str, record_str: &str) -> CliResult {
+async fn process_record_get(
+    rpc_client: &RpcClient,
+    domain: &str,
+    record_str: &str,
+    v2: bool,
+) -> CliResult {
     let record = Record::try_from_str(record_str)?;
 
     let key = record::get_record_key(
         domain,
         Record::try_from_str(record_str)?,
-        record::RecordVersion::V1,
+        if v2 {
+            record::RecordVersion::V2
+        } else {
+            record::RecordVersion::V1
+        },
     )?;
     let mut table = Table::new();
     if let Some((_, data)) = resolve::resolve_name_registry(rpc_client, &key).await? {
@@ -646,78 +726,76 @@ async fn process_record_get(rpc_client: &RpcClient, domain: &str, record_str: &s
     Ok(())
 }
 
-async fn process_deploy(
-    rpc_client: &RpcClient,
-    domain: &str,
-    keypair_path: &str,
-    folder_path: &str,
-) -> CliResult {
-    let client = Client::new();
-    let mut form = multipart::Form::new();
-    let pb = ProgressBar::new_spinner();
-    pb.enable_steady_tick(Duration::from_millis(100));
-    pb.set_message("🚚 Uploading to IPFS");
-    for entry in WalkDir::new(folder_path) {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() {
-            let mut buffer = Vec::new();
-            File::open(path)?.read_to_end(&mut buffer)?;
+#[derive(Serialize)]
+pub struct SystemDumpRecord {
+    domain: String,
+    record_type: Option<String>,
+    record_key: String,
+}
 
-            // Constructing the path to append to the form
-            let form_path = path
-                .strip_prefix(folder_path)?
-                .to_str()
-                .ok_or("Failed to convert path to string")?;
-
-            // Ensure we keep the directory structure
-            let part_path = if form_path.is_empty() {
-                path.file_name()
-                    .ok_or("Failed to get file name")?
-                    .to_str()
-                    .ok_or("Failed to convert file name to string")?
-                    .to_string()
-            } else {
-                form_path.to_string()
-            };
-
-            let part = multipart::Part::bytes(buffer)
-                .file_name(part_path.clone())
-                .mime_str("application/octet-stream")?;
-
-            form = form.part(part_path, part);
+pub async fn process_system_dump(rpc_client: &RpcClient) -> CliResult {
+    let record_v2_accounts = rpc_client
+        .get_program_accounts_with_config(
+            &spl_name_service::ID,
+            RpcProgramAccountsConfig {
+                filters: Some(vec![RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+                    64,
+                    sns_records::central_state::KEY.as_ref().to_vec(),
+                ))]),
+                account_config: RpcAccountInfoConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    data_slice: None,
+                    commitment: None,
+                    min_context_slot: None,
+                },
+                with_context: None,
+            },
+        )
+        .await?;
+    eprintln!("Found {} v2 records", record_v2_accounts.len());
+    let mut by_parent: HashMap<Pubkey, Vec<Pubkey>> = HashMap::new();
+    for (k, a) in record_v2_accounts {
+        let spl_header = NameRecordHeader::unpack_unchecked(&a.data[..NameRecordHeader::LEN])?;
+        let entry = by_parent.entry(spl_header.parent_name);
+        match entry {
+            std::collections::hash_map::Entry::Occupied(mut o) => o.get_mut().push(k),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(vec![k]);
+            }
         }
     }
-
-    let res = client
-        .post("https://ipfs.bonfida.com/api/v0/add?wrap-with-directory=true")
-        .multipart(form)
-        .send()
-        .await
-        .unwrap();
-
-    #[derive(Deserialize, Clone)]
-    pub struct Response {
-        pub name: String,
-        pub hash: String,
-        pub size: String,
+    let parent_domains = by_parent.keys().cloned().collect::<Vec<_>>();
+    eprintln!("From a total of {} domains", by_parent.keys().len());
+    let reverse_lookup_keys =
+        sns_sdk::non_blocking::resolve::resolve_reverse_batch(rpc_client, &parent_domains).await?;
+    for (domain, name) in parent_domains
+        .into_iter()
+        .zip(reverse_lookup_keys.into_iter())
+    {
+        if name.is_none() {
+            continue;
+        }
+        let name = name.unwrap();
+        use Record::*;
+        let possible_records = [
+            Ipfs, Arwv, Sol, Eth, Btc, Ltc, Doge, Email, Url, Discord, Github, Reddit, Twitter,
+            Telegram, Pic, Shdw, Point, Bsc, Injective, Backpack, A, AAAA, CNAME, TXT, BASE,
+        ]
+        .into_iter()
+        .map(|r| get_record_v2_key(&name, r).map(|res| (res, r)))
+        .collect::<Result<HashMap<_, _>, _>>()?;
+        for record in by_parent.get(&domain).unwrap() {
+            let record_type = possible_records.get(record);
+            println!(
+                "{}",
+                serde_json::to_string(&SystemDumpRecord {
+                    domain: name.clone(),
+                    record_type: record_type.map(|r| r.as_str().to_owned()),
+                    record_key: record.to_string()
+                })?
+            )
+        }
     }
-
-    pb.finish_with_message("✅ Content uploaded to IPFS");
-
-    let json = res.json::<Vec<Response>>().await?;
-
-    let dir_cid = json.iter().find(|x| x.name.is_empty()).unwrap();
-
-    process_record_set(
-        rpc_client,
-        domain,
-        Record::Ipfs.as_str(),
-        &dir_cid.hash,
-        keypair_path,
-    )
-    .await?;
-
     Ok(())
 }
 
@@ -750,9 +828,12 @@ async fn main() {
             space,
             url,
         } => process_register(&get_rpc_client(url), &keypair_path, domains, space).await,
-        Commands::Record(RecordCommand { cmd }) => match cmd {
+        Commands::RegisterFavourite { owner, domain, url } => {
+            process_register_favourite(&get_rpc_client(url), &owner, &domain).await
+        }
+        Commands::Record(RecordCommand { cmd, v2, url }) => match cmd {
             RecordSubCommand::Get { domain, record } => {
-                process_record_get(&get_rpc_client(None), &domain, &record).await
+                process_record_get(&get_rpc_client(url), &domain, &record, v2).await
             }
             RecordSubCommand::Set {
                 domain,
@@ -760,16 +841,15 @@ async fn main() {
                 content,
                 keypair,
             } => {
-                process_record_set(&get_rpc_client(None), &domain, &record, &content, &keypair)
-                    .await
+                if v2 {
+                    unimplemented!()
+                } else {
+                    process_record_set(&get_rpc_client(url), &domain, &record, &content, &keypair)
+                        .await
+                }
             }
+            RecordSubCommand::SystemDump {} => process_system_dump(&get_rpc_client(url)).await,
         },
-        Commands::Deploy {
-            url,
-            domain,
-            keypair,
-            folder,
-        } => process_deploy(&get_rpc_client(url), &domain, &keypair, &folder).await,
     };
 
     if let Err(err) = res {

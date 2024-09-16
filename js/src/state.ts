@@ -1,8 +1,8 @@
 import { Connection, PublicKey } from "@solana/web3.js";
-import { deserializeUnchecked, Schema } from "borsh";
-import { retrieveNftOwner } from "./nft";
+import { retrieveNftOwnerV2 } from "./nft/retrieveNftOwnerV2";
 import { Buffer } from "buffer";
-import { ErrorType, SNSError } from "./error";
+import { deserialize } from "borsh";
+import { AccountDoesNotExistError } from "./error";
 
 export class NameRegistryState {
   static HEADER_LEN = 96;
@@ -11,19 +11,14 @@ export class NameRegistryState {
   class: PublicKey;
   data: Buffer | undefined;
 
-  static schema: Schema = new Map([
-    [
-      NameRegistryState,
-      {
-        kind: "struct",
-        fields: [
-          ["parentName", [32]],
-          ["owner", [32]],
-          ["class", [32]],
-        ],
-      },
-    ],
-  ]);
+  static schema = {
+    struct: {
+      parentName: { array: { type: "u8", len: 32 } },
+      owner: { array: { type: "u8", len: 32 } },
+      class: { array: { type: "u8", len: 32 } },
+    },
+  };
+
   constructor(obj: {
     parentName: Uint8Array;
     owner: Uint8Array;
@@ -34,42 +29,41 @@ export class NameRegistryState {
     this.class = new PublicKey(obj.class);
   }
 
+  static deserialize(data: Buffer) {
+    const res = new NameRegistryState(deserialize(this.schema, data) as any);
+
+    res.data = data?.slice(this.HEADER_LEN);
+    return res;
+  }
+
   public static async retrieve(
     connection: Connection,
-    nameAccountKey: PublicKey
+    nameAccountKey: PublicKey,
   ) {
     const nameAccount = await connection.getAccountInfo(nameAccountKey);
     if (!nameAccount) {
-      throw new SNSError(ErrorType.AccountDoesNotExist);
+      throw new AccountDoesNotExistError(`The name account does not exist`);
     }
 
-    let res: NameRegistryState = deserializeUnchecked(
-      this.schema,
-      NameRegistryState,
-      nameAccount.data
+    const res = new NameRegistryState(
+      deserialize(this.schema, nameAccount.data) as any,
     );
-
     res.data = nameAccount.data?.slice(this.HEADER_LEN);
 
-    const nftOwner = await retrieveNftOwner(connection, nameAccountKey);
+    const nftOwner = await retrieveNftOwnerV2(connection, nameAccountKey);
 
     return { registry: res, nftOwner };
   }
 
   static async _retrieveBatch(
     connection: Connection,
-    nameAccountKeys: PublicKey[]
+    nameAccountKeys: PublicKey[],
   ) {
-    const nameAccounts = await connection.getMultipleAccountsInfo(
-      nameAccountKeys
-    );
+    const nameAccounts =
+      await connection.getMultipleAccountsInfo(nameAccountKeys);
     const fn = (data: Buffer | undefined) => {
       if (!data) return undefined;
-      const res: NameRegistryState = deserializeUnchecked(
-        this.schema,
-        NameRegistryState,
-        data
-      );
+      const res = new NameRegistryState(deserialize(this.schema, data) as any);
       res.data = data?.slice(this.HEADER_LEN);
       return res;
     };
@@ -78,13 +72,13 @@ export class NameRegistryState {
 
   public static async retrieveBatch(
     connection: Connection,
-    nameAccountKeys: PublicKey[]
+    nameAccountKeys: PublicKey[],
   ) {
     let result: (NameRegistryState | undefined)[] = [];
     const keys = [...nameAccountKeys];
     while (keys.length > 0) {
       result.push(
-        ...(await this._retrieveBatch(connection, keys.splice(0, 100)))
+        ...(await this._retrieveBatch(connection, keys.splice(0, 100))),
       );
     }
     return result;

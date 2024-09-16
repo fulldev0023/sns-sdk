@@ -1,14 +1,22 @@
 import { PublicKey } from "@solana/web3.js";
 import { CUSTOM_BG_TLD } from "./constants";
 import { CustomBg } from "./types/custom-bg";
-import { getHashedNameSync, getNameAccountKeySync } from "./utils";
-import { ErrorType, SNSError } from "./error";
+import { getHashedNameSync } from "./utils/getHashedNameSync";
+import { getNameAccountKeySync } from "./utils/getNameAccountKeySync";
+import { InvalidCustomBgError } from "./error";
 
 const DEGEN_POET_KEY = new PublicKey(
-  "ART5dr4bDic2sQVZoFheEmUxwQq5VGSx9he7JxHcXNQD"
+  "ART5dr4bDic2sQVZoFheEmUxwQq5VGSx9he7JxHcXNQD",
 );
 const RBG_0x00_KEY = new PublicKey(
-  "CSWvuDHXExVGEMR9kP8xYAHuNjXogeRck9Cnr312CC9g"
+  "CSWvuDHXExVGEMR9kP8xYAHuNjXogeRck9Cnr312CC9g",
+);
+const RETARDIO_KEY = new PublicKey(
+  "J2Q2j6kpSg7tq8JzueCHNTQNcyNnQkvr85RhsFnYZWeG",
+);
+
+const NUMBER_ART_KEY = new PublicKey(
+  "6vwnZJZNQjtY4zR93YUuyeDUBhacLLH2mQaZiJAvVwzu",
 );
 
 export const getCustomBgKeys = (domain: string, customBg: CustomBg) => {
@@ -18,7 +26,7 @@ export const getCustomBgKeys = (domain: string, customBg: CustomBg) => {
   const domainKey = getNameAccountKeySync(
     hashedDomain,
     undefined,
-    CUSTOM_BG_TLD
+    CUSTOM_BG_TLD,
   );
   const bgKey = getNameAccountKeySync(hashedBg, undefined, domainKey);
 
@@ -31,7 +39,24 @@ export const getArtistPubkey = (bg: CustomBg): PublicKey => {
       return DEGEN_POET_KEY;
     case CustomBg.Rgb0x001:
       return RBG_0x00_KEY;
+    case CustomBg.Retardio1:
+      return RETARDIO_KEY;
+    case CustomBg.Retardio2:
+      return RETARDIO_KEY;
+    case CustomBg.Retardio3:
+      return RETARDIO_KEY;
+    case CustomBg.NumberArt0:
+    case CustomBg.NumberArt1:
+    case CustomBg.NumberArt2:
+    case CustomBg.NumberArt3:
+    case CustomBg.NumberArt4:
+    case CustomBg.NumberArt5:
+    case CustomBg.NumberArt6:
+    case CustomBg.NumberArt7:
+    case CustomBg.NumberArt8:
+    case CustomBg.NumberArt9:
+      return NUMBER_ART_KEY;
     default:
-      throw new SNSError(ErrorType.InvalidCustomBg);
+      throw new InvalidCustomBgError("The given background is invalid");
   }
 };

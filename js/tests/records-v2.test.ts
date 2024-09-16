@@ -1,37 +1,77 @@
 require("dotenv").config();
 import { test, expect } from "@jest/globals";
-import {
-  deserializeRecordV2Content,
-  getMultipleRecordsV2,
-  getRecordV2,
-  serializeRecordV2Content,
-} from "../src/record_v2";
+import { deserializeRecordV2Content } from "../src/record_v2/deserializeRecordV2Content";
+import { getMultipleRecordsV2 } from "../src/record_v2/getMultipleRecordsV2";
+import { getRecordV2 } from "../src/record_v2/getRecordV2";
+import { getRecordV2Key } from "../src/record_v2/getRecordV2Key";
+import { serializeRecordV2Content } from "../src/record_v2/serializeRecordV2Content";
 import { Record } from "../src/types/record";
 import { Keypair, Connection, PublicKey, Transaction } from "@solana/web3.js";
-import {
-  createRecordV2Instruction,
-  deleteRecordV2,
-  ethValidateRecordV2Content,
-  updateRecordV2Instruction,
-  validateRecordV2Content,
-  writRoaRecordV2,
-} from "../src/bindings";
+import { createRecordV2Instruction } from "../src/bindings/createRecordV2Instruction";
+import { deleteRecordV2 } from "../src/bindings/deleteRecordV2";
+import { ethValidateRecordV2Content } from "../src/bindings/ethValidateRecordV2Content";
+import { updateRecordV2Instruction } from "../src/bindings/updateRecordV2Instruction";
+import { validateRecordV2Content } from "../src/bindings/validateRecordV2Content";
+import { writRoaRecordV2 } from "../src/bindings/writRoaRecordV2";
 
 jest.setTimeout(50_000);
 
 const connection = new Connection(process.env.RPC_URL!);
 
 test("Records V2 des/ser", () => {
-  let content = "this is a test";
-  let ser = serializeRecordV2Content(content, Record.TXT);
-  let des = deserializeRecordV2Content(Buffer.from(ser), Record.TXT);
-  expect(des).toBe(content);
+  const items = [
+    { content: "this is a test", record: Record.TXT },
+    {
+      content: Keypair.generate().publicKey.toBase58(),
+      record: Record.SOL,
+      length: 32,
+    },
+    {
+      content: "inj13glcnaum2xqv5a0n0hdsmv0f6nfacjsfvrh5j9",
+      record: Record.Injective,
+      length: 20,
+    },
+    {
+      content: "example.com",
+      record: Record.CNAME,
+    },
+    {
+      content: "example.com",
+      record: Record.CNAME,
+    },
+    {
+      content: "0xc0ffee254729296a45a3885639ac7e10f9d54979",
+      record: Record.ETH,
+      length: 20,
+    },
+    {
+      content: "1.1.1.4",
+      record: Record.A,
+      length: 4,
+    },
+    {
+      content: "2345:425:2ca1::567:5673:23b5",
+      record: Record.AAAA,
+      length: 16,
+    },
+    {
+      content: "username",
+      record: Record.Discord,
+    },
+    {
+      content: "k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonzllnv0v8",
+      record: Record.IPNS,
+    },
+  ];
 
-  content = Keypair.generate().publicKey.toBase58();
-  ser = serializeRecordV2Content(content, Record.SOL);
-  des = deserializeRecordV2Content(Buffer.from(ser), Record.SOL);
-  expect(des).toBe(content);
-  expect(ser.length).toBe(32);
+  items.forEach((e) => {
+    const ser = serializeRecordV2Content(e.content, e.record);
+    const des = deserializeRecordV2Content(ser, e.record);
+    expect(des).toBe(e.content);
+    if (e.length) {
+      expect(ser.length).toBe(e.length);
+    }
+  });
 });
 
 test("Create record", async () => {
@@ -300,4 +340,41 @@ test("getMultipleRecordsV2", async () => {
     expect(items[i].value).toBe(res[i]?.deserializedContent);
     expect(items[i].record).toBe(res[i]?.record);
   }
+});
+
+describe("getRecordV2Key", () => {
+  test.each([
+    {
+      domain: "domain1.sol",
+      record: Record.SOL,
+      expected: "GBrd6Q53eu1T2PiaQAtm92r3DwxmoGvZ2D6xjtVtN1Qt",
+    },
+    {
+      domain: "sub.domain2.sol",
+      record: Record.SOL,
+      expected: "A3EFmyCmK5rp73TdgLH8aW49PJ8SJw915arhydRZ6Sws",
+    },
+    {
+      domain: "domain3.sol",
+      record: Record.Url,
+      expected: "DMZmnjcAnUwSje4o2LGJhipCfNZ5b37GEbbkwbQBWEW1",
+    },
+    {
+      domain: "sub.domain4.sol",
+      record: Record.Url,
+      expected: "6o8JQ7vss6r9sw9GWNVugZktwfEJ67iUz6H63hhmg4sj",
+    },
+    {
+      domain: "domain5.sol",
+      record: Record.IPFS,
+      expected: "DQHeVmAj9Nz4uAn2dneEsgBZWcfhUqLdtbDcfWhGL47D",
+    },
+    {
+      domain: "sub.domain6.sol",
+      record: Record.IPFS,
+      expected: "Dj7tnTTaktrrmdtatRuLG3YdtGZk8XEBMb4w5WtCBHvr",
+    },
+  ])("$domain", (e) => {
+    expect(getRecordV2Key(e.domain, e.record).toBase58()).toBe(e.expected);
+  });
 });

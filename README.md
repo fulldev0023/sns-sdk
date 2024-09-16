@@ -113,7 +113,13 @@ The SDK proxy is a Cloudflare worker that proxies the JS SDK via REST calls. It'
 - `GET /types/record`: Returns the list of supported records
 - `GET /reverse-lookup/:pubkey`: Returns the reverse lookup of `pubkey`
 - `GET /subdomains/:parent`: Returns all the subdomains of `parent`
-- `GET /register?buyer={buyer}&domain={domain}&space={space}&serialize={serialize}`: This endpoint can be used to register `domain` for `buyer`. Additionaly, the `buyer` dans specify the `space` it wants to allocate for the `domain` account. In the case where `serialize` is `true` the endpoint will return the transaction serialized in the wire format base64 encoded. Otherwise it will return the instruction in the following format: `{ programId: string, keys: {isWritable: boolean, isSigner: boolean, pubkey: string}[], data: string }` where data is base64 encoded. This endpoint also supports the optional `mint` parameter to change the mint of the token used for registration (currently supports USDC, USDT, FIDA and wSOL), if `mint` is omitted it defaults to USDC.
+- `GET /register?buyer={buyer}&domain={domain}&space={space}&serialize={serialize}`: This endpoint can be used to register `domain` for `buyer`. Additionally, the `buyer` dans specify the `space` it wants to allocate for the `domain` account. In the case where `serialize` is `true` the endpoint will return the transaction serialized in the wire format base64 encoded. Otherwise it will return the instruction in the following format: `{ programId: string, keys: {isWritable: boolean, isSigner: boolean, pubkey: string}[], data: string }` where data is base64 encoded. This endpoint also supports the optional `mint` parameter to change the mint of the token used for registration (currently supports USDC, USDT, FIDA and wSOL), if `mint` is omitted it defaults to USDC.
+- `GET /twitter/get-handle-by-key/:key`: This endpoint can be used to fetch the Twitter handle of a given public key
+- `GET /twitter/get-key-by-handle/:handle`: This endpoint can be used to fetch the public key of a given Twitter handle
+- `GET /multiple-favorite-domains/:owners`: Returns the favorite domains for a list of owners that are comma separated
+- `GET /record-v2/:domain/:record`: Returns the content of the `record` (v2) of `domain`. The result is made of the deserialized value, staleness boolean (`stale`), right of association (`roa`) if applicable, and the record object made of its`header` and `data` (base64 encoded).
+
+NOTE: All endpoints capable of performing RPC calls currently support an optional `rpc` query parameter for specifying a custom RPC URL. In the future, this parameter will become mandatory, and the Cloudflare worker will exclusively proxy calls to a specified custom RPC URL.
 
 The SDK proxy is deployed at: https://sns-sdk-proxy.bonfida.workers.dev/
 
@@ -125,7 +131,7 @@ The SDK proxy is deployed at: https://sns-sdk-proxy.bonfida.workers.dev/
 The CLI can be installed with:
 
 ```
-cargo install --git https://github.com/Bonfida/sns-sdk.git sns
+cargo install sns-cli
 ```
 
 The CLI has the following commands:
